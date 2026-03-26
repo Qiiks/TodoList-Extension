@@ -1,28 +1,26 @@
 version: "3.8"
+
 services:
   server:
-    build: ./packages/server
-    ports:
-      - "3000:3000"
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
     environment:
-      - DATABASE_URL=postgresql://teamtodo:password@db:5432/teamtodo
-      - JWT_SECRET=${JWT_SECRET}
-      - ADMIN_GITHUB_USERNAME=${ADMIN_GITHUB_USERNAME}
-    depends_on:
-      db:
-        condition: service_healthy
-  db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=teamtodo
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=teamtodo
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_GITHUB_USERNAME: ${ADMIN_GITHUB_USERNAME}
+      PORT: ${PORT}
+      NODE_ENV: ${NODE_ENV}
+    labels:
+      - coolify.managed=true
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U teamtodo"]
-      interval: 5s
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:' + (process.env.PORT || '3000') + '/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
       timeout: 5s
       retries: 5
-volumes:
-  pgdata:
+      start_period: 10s
+    restart: unless-stopped

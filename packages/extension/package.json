@@ -67,8 +67,13 @@
       "properties": {
         "teamtodo.serverUrl": {
           "type": "string",
-          "default": "http://localhost:3000",
+          "default": "",
           "description": "URL of the TeamTodo server"
+        },
+        "teamtodo.inviteCode": {
+          "type": "string",
+          "default": "",
+          "description": "TeamTodo invite code used for first-time sign in"
         },
         "teamtodo.repoOverride": {
           "type": "string",

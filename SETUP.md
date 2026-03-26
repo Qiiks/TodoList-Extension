@@ -117,6 +117,16 @@ Make sure the URL is reachable from teammate machines and WebSocket traffic is a
 
 After this, live sync/presence/activity should appear in the TeamTodo sidebar.
 
+## Deploying on Coolify
+
+1. Go to Coolify dashboard → **New Resource** → choose **Docker Compose** or **Dockerfile**.
+2. Point Coolify to your TeamTodo repository.
+3. Use `docker-compose.yml` (production), **not** `docker-compose.dev.yml`.
+4. In Coolify environment variable settings, add every variable from `.env.coolify.example`.
+5. Set health check path to `/health`.
+6. Deploy — Coolify handles build, container lifecycle, and routing.
+7. Access admin dashboard at `https://your-coolify-domain/admin`.
+
 ## 9) Troubleshooting
 
 ### Connection errors (HTTP)

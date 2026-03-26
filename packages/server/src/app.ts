@@ -13,6 +13,8 @@ export interface AppContext {
 export function createApp(store = createStore()): AppContext {
   const app = fastify({ logger: false });
 
+  app.get('/health', async () => ({ status: 'ok', uptime: process.uptime() }));
+
   registerAuthRoutes(app, store);
   registerCommentRoutes(app, store);
   registerActivityRoutes(app, store);

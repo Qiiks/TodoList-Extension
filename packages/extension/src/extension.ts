@@ -4,6 +4,8 @@ import { TeamTodoProvider } from './ui/panel';
 export function activate(context: vscode.ExtensionContext) {
   const provider = new TeamTodoProvider(context);
 
+  void provider.ensureConfiguredOnStartup();
+
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('teamtodo.webview', provider));
 
   context.subscriptions.push(

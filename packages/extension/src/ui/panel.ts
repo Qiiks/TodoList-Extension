@@ -145,6 +145,10 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage({ type: 'focus-quick-add' });
   }
 
+  public async ensureConfiguredOnStartup(): Promise<void> {
+    await this.ensureServerUrlConfigured();
+  }
+
   public toggleShowCompleted(): void {
     this.showCompleted = !this.showCompleted;
     this.pushRender();
@@ -169,20 +173,27 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const inviteCode = await vscode.window.showInputBox({
-      prompt: 'TeamTodo invite code (16 chars)',
-      ignoreFocusOut: true,
-      validateInput: (value) => (value.trim().length === 16 ? null : 'Invite code must be 16 characters'),
-    });
+    let inviteCode = this.inviteCode();
     if (!inviteCode) {
-      return;
+      const enteredInvite = await vscode.window.showInputBox({
+        prompt: 'TeamTodo invite code (16 chars)',
+        ignoreFocusOut: true,
+        validateInput: (value) => (value.trim().length === 16 ? null : 'Invite code must be 16 characters'),
+      });
+      if (!enteredInvite) {
+        return;
+      }
+      inviteCode = enteredInvite.trim();
+      await vscode.workspace
+        .getConfiguration('teamtodo')
+        .update('inviteCode', inviteCode, vscode.ConfigurationTarget.Global);
     }
 
     const serverUrl = this.serverUrl();
     const response = await fetch(`${serverUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ githubToken: githubSession.accessToken.trim(), inviteCode: inviteCode.trim() }),
+      body: JSON.stringify({ githubToken: githubSession.accessToken.trim(), inviteCode }),
     });
 
     if (!response.ok) {
@@ -230,6 +241,34 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
   }
 
   public async switchRepositoryInteractive(): Promise<void> {
+    const currentServerUrl = this.serverUrl();
+    const serverUrl = await vscode.window.showInputBox({
+      prompt: 'TeamTodo server URL (for example: https://teamtodo.your-domain.com)',
+      value: currentServerUrl,
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim().length > 0 ? null : 'Server URL is required'),
+    });
+    if (serverUrl === undefined) {
+      return;
+    }
+    await vscode.workspace
+      .getConfiguration('teamtodo')
+      .update('serverUrl', serverUrl.trim(), vscode.ConfigurationTarget.Global);
+
+    const currentInviteCode = this.inviteCode();
+    const inviteCode = await vscode.window.showInputBox({
+      prompt: 'TeamTodo invite code (16 chars)',
+      value: currentInviteCode,
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim().length === 16 ? null : 'Invite code must be 16 characters'),
+    });
+    if (inviteCode === undefined) {
+      return;
+    }
+    await vscode.workspace
+      .getConfiguration('teamtodo')
+      .update('inviteCode', inviteCode.trim(), vscode.ConfigurationTarget.Global);
+
     const current = vscode.workspace.getConfiguration('teamtodo').get<string>('repoOverride') ?? '';
     const value = await vscode.window.showInputBox({
       prompt: 'Repository override (owner/repo). Leave blank to use detected git remote.',
@@ -278,6 +317,8 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
   private async bootstrap(): Promise<void> {
     this.disposeRuntime();
     this.defaultPriority = this.readDefaultPriority();
+
+    await this.ensureServerUrlConfigured();
 
     this.repoId = await this.resolveRepoId();
     const session = await readSession(this.context.secrets);
@@ -502,7 +543,33 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
   }
 
   private serverUrl(): string {
-    return vscode.workspace.getConfiguration('teamtodo').get<string>('serverUrl', 'http://localhost:3000');
+    return vscode.workspace.getConfiguration('teamtodo').get<string>('serverUrl', '').trim();
+  }
+
+  private inviteCode(): string {
+    return vscode.workspace.getConfiguration('teamtodo').get<string>('inviteCode', '').trim();
+  }
+
+  private async ensureServerUrlConfigured(): Promise<void> {
+    const current = this.serverUrl();
+    if (current.length > 0) {
+      return;
+    }
+
+    const entered = await vscode.window.showInputBox({
+      prompt: 'Enter TeamTodo server URL to get started (for example: https://teamtodo.your-domain.com)',
+      ignoreFocusOut: true,
+      validateInput: (value) => (value.trim().length > 0 ? null : 'Server URL is required'),
+    });
+
+    if (!entered) {
+      vscode.window.showWarningMessage('TeamTodo server URL is required. Set teamtodo.serverUrl in Settings.');
+      return;
+    }
+
+    await vscode.workspace
+      .getConfiguration('teamtodo')
+      .update('serverUrl', entered.trim(), vscode.ConfigurationTarget.Global);
   }
 
   private async ensureJwt(): Promise<string | null> {
