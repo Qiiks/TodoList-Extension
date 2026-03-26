@@ -53,18 +53,31 @@ export function registerActivityRoutes(app: FastifyInstance, store: TeamTodoStor
 
   app.get('/api/repos/:repo/export/markdown', { preHandler: requireAuth }, async (request, reply) => {
     const { repo } = request.params as { repo: string };
-    const rows = await db
-      .select({
-        title: todosProjection.title,
-        status: todosProjection.status,
-        priority: todosProjection.priority,
-        assignedTo: todosProjection.assignedTo,
-        labels: todosProjection.labels,
-        description: todosProjection.description,
-      })
-      .from(todosProjection)
-      .where(eq(todosProjection.repoId, repo))
-      .orderBy(asc(todosProjection.position));
+    let rows: Array<{
+      title: string;
+      status: string;
+      priority: string;
+      assignedTo: string | null;
+      labels: unknown;
+      description: string | null;
+    }> = [];
+
+    try {
+      rows = await db
+        .select({
+          title: todosProjection.title,
+          status: todosProjection.status,
+          priority: todosProjection.priority,
+          assignedTo: todosProjection.assignedTo,
+          labels: todosProjection.labels,
+          description: todosProjection.description,
+        })
+        .from(todosProjection)
+        .where(eq(todosProjection.repoId, repo))
+        .orderBy(asc(todosProjection.position));
+    } catch (error) {
+      app.log.error({ error, repo }, 'failed to query todos projection for markdown export');
+    }
 
     const markdown = toMarkdown(rows);
     reply

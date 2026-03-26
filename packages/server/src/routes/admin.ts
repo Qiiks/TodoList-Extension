@@ -3,7 +3,51 @@ import type { FastifyInstance } from 'fastify';
 import { inviteSchema } from '@teamtodo/shared';
 import { requireAdmin } from '../auth/middleware';
 import { config } from '../config';
+import { verifyAccessToken } from '../auth/jwt';
 import type { TeamTodoStore } from '../store';
+
+function renderUnauthorizedAdminPage(message: string) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TeamTodo Admin Access</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      background: #0b1020;
+      color: #e5e7eb;
+    }
+    .card {
+      width: min(560px, calc(100vw - 32px));
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 12px; font-size: 1.4rem; }
+    p { margin: 8px 0; color: #cbd5e1; line-height: 1.5; }
+    code { background: #1f2937; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Admin Authentication Required</h1>
+    <p>${message}</p>
+    <p>Open the TeamTodo VS Code extension and sign in first, then copy your JWT token and open:</p>
+    <p><code>/admin?token=YOUR_JWT</code></p>
+    <p>Only users with GitHub username <code>${config.adminGithub}</code> can access this page.</p>
+  </main>
+</body>
+</html>`;
+}
 
 function createInviteCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -78,7 +122,38 @@ export function registerAdminRoutes(app: FastifyInstance, store: TeamTodoStore) 
     };
   });
 
-  app.get('/admin', { preHandler: requireAdmin }, async (request, reply) => {
+  app.get('/admin', async (request, reply) => {
+    const queryToken = (request.query as { token?: string } | undefined)?.token?.trim();
+    const authHeader = queryToken
+      ? `Bearer ${queryToken}`
+      : request.headers.authorization;
+
+    if (!authHeader?.startsWith('Bearer ')) {
+      return reply
+        .status(401)
+        .type('text/html; charset=utf-8')
+        .send(renderUnauthorizedAdminPage('Missing token. Provide Authorization Bearer token or ?token=JWT.'));
+    }
+
+    const bearerToken = authHeader.replace('Bearer ', '');
+
+    try {
+      const payload = verifyAccessToken(bearerToken) as {
+        githubUsername?: string;
+      };
+      if (payload.githubUsername !== config.adminGithub) {
+        return reply
+          .status(403)
+          .type('text/html; charset=utf-8')
+          .send(renderUnauthorizedAdminPage('You are authenticated but not configured as admin.'));
+      }
+    } catch {
+      return reply
+        .status(401)
+        .type('text/html; charset=utf-8')
+        .send(renderUnauthorizedAdminPage('Invalid or expired token.'));
+    }
+
     reply.type('text/html');
     return `<!DOCTYPE html>
 <html lang="en">
@@ -328,19 +403,26 @@ export function registerAdminRoutes(app: FastifyInstance, store: TeamTodoStore) 
   <div id="toast"></div>
 
   <script>
+    const ADMIN_TOKEN = ${JSON.stringify(bearerToken)};
+    const authHeaders = () => (ADMIN_TOKEN ? { authorization: 'Bearer ' + ADMIN_TOKEN } : {});
+
     const API = {
       get: async (url) => { 
-        const r = await fetch(url);
+        const r = await fetch(url, { headers: { ...authHeaders() } });
         if(!r.ok) throw new Error('Request failed');
         return r.json(); 
       },
       post: async (url, body) => { 
-        const r = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify(body)
+        });
         if(!r.ok) throw new Error('Request failed');
         return r.json();
       },
       delete: async (url) => {
-        const r = await fetch(url, { method: 'DELETE' });
+        const r = await fetch(url, { method: 'DELETE', headers: { ...authHeaders() } });
         if(!r.ok) throw new Error('Request failed');
         return r.json();
       }
