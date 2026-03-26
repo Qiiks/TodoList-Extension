@@ -11,7 +11,7 @@ export interface AppContext {
 }
 
 export function createApp(store = createStore()): AppContext {
-  const app = fastify({ logger: false });
+  const app = fastify({ logger: true });
 
   app.get('/health', async () => ({ status: 'ok', uptime: process.uptime() }));
 
