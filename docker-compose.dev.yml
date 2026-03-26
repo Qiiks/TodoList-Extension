@@ -12,6 +12,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-do-not-use}
       ADMIN_GITHUB_USERNAME: ${ADMIN_GITHUB_USERNAME:-admin}
       PORT: ${PORT:-3000}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-http://localhost:3000/api/auth/github/callback}
+      WEB_APP_URL: ${WEB_APP_URL:-http://localhost:3000}
       NODE_ENV: ${NODE_ENV:-development}
     depends_on:
       db:

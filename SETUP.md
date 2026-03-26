@@ -59,6 +59,20 @@ Current variables in `.env.example`:
   - HTTP port for the backend server.
   - Default: `3000`
 
+- `GITHUB_CLIENT_ID`
+  - GitHub OAuth App client ID used by the web frontend sign-in flow.
+
+- `GITHUB_CLIENT_SECRET`
+  - GitHub OAuth App client secret.
+
+- `GITHUB_OAUTH_REDIRECT_URI`
+  - OAuth callback URL handled by TeamTodo backend.
+  - Local example: `http://localhost:3000/api/auth/github/callback`
+
+- `WEB_APP_URL`
+  - Public base URL used for OAuth callback redirects to the web app.
+  - Local example: `http://localhost:3000`
+
 ## 4) Start backend services
 
 ```bash
@@ -117,15 +131,38 @@ Make sure the URL is reachable from teammate machines and WebSocket traffic is a
 
 After this, live sync/presence/activity should appear in the TeamTodo sidebar.
 
+## 8.1) Web app login flow (React frontend)
+
+Open:
+
+```
+http://localhost:3000/app
+```
+
+First-time login:
+
+1. Enter a valid 16-character invite code
+2. Click **Continue with GitHub**
+3. Complete GitHub OAuth consent
+4. You are redirected back to `/app` with an authenticated session
+
+The web app supports todos, realtime sync, comments, activity feed, markdown export, and admin shortcut (for admin users).
+
 ## Deploying on Coolify
 
 1. Go to Coolify dashboard → **New Resource** → choose **Docker Compose** or **Dockerfile**.
 2. Point Coolify to your TeamTodo repository.
 3. Use `docker-compose.yml` (production), **not** `docker-compose.dev.yml`.
 4. In Coolify environment variable settings, add every variable from `.env.coolify.example`.
+   - Ensure these are set correctly for web OAuth:
+     - `GITHUB_CLIENT_ID`
+     - `GITHUB_CLIENT_SECRET`
+     - `GITHUB_OAUTH_REDIRECT_URI=https://your-coolify-domain/api/auth/github/callback`
+     - `WEB_APP_URL=https://your-coolify-domain`
 5. Set health check path to `/health`.
 6. Deploy — Coolify handles build, container lifecycle, and routing.
 7. Access admin dashboard at `https://your-coolify-domain/admin`.
+8. Access web app at `https://your-coolify-domain/app`.
 
 ## 9) Troubleshooting
 
