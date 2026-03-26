@@ -57,3 +57,4 @@ coverage/
 .AppleDouble
 .LSOverride
 
+package-lock.json

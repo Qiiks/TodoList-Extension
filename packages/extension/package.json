@@ -1,0 +1,135 @@
+{
+  "name": "teamtodo-extension",
+  "displayName": "TeamTodo",
+  "version": "1.0.0",
+  "publisher": "teamtodo",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist/**",
+    "media/**",
+    "node_modules/**",
+    "package.json"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "teamtodo.addTodo",
+        "title": "TeamTodo: Add New Todo"
+      },
+      {
+        "command": "teamtodo.toggleShowCompleted",
+        "title": "TeamTodo: Toggle Show Completed"
+      },
+      {
+        "command": "teamtodo.signIn",
+        "title": "TeamTodo: Sign In"
+      },
+      {
+        "command": "teamtodo.signOut",
+        "title": "TeamTodo: Sign Out"
+      },
+      {
+        "command": "teamtodo.switchRepository",
+        "title": "TeamTodo: Switch Repository"
+      },
+      {
+        "command": "teamtodo.exportMarkdown",
+        "title": "TeamTodo: Export as Markdown"
+      },
+      {
+        "command": "teamtodo.refresh",
+        "title": "TeamTodo: Refresh"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "teamtodo-sidebar",
+          "title": "TeamTodo",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "teamtodo-sidebar": [
+        {
+          "type": "webview",
+          "id": "teamtodo.webview",
+          "name": "Todos"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TeamTodo",
+      "properties": {
+        "teamtodo.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "URL of the TeamTodo server"
+        },
+        "teamtodo.repoOverride": {
+          "type": "string",
+          "default": "",
+          "description": "Manual repository override (owner/repo)"
+        },
+        "teamtodo.notifications.showToasts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show TeamTodo toast notifications"
+        },
+        "teamtodo.notifications.showCreated": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show created todo notifications"
+        },
+        "teamtodo.notifications.showCompleted": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show completed todo notifications"
+        },
+        "teamtodo.notifications.showDeleted": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show deleted todo notifications"
+        },
+        "teamtodo.defaultPriority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "default": "medium",
+          "description": "Default priority for quick-add"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "tsc -p ./",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@teamtodo/shared": "1.0.0",
+    "isomorphic-ws": "^5.0.0",
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.14"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.2"
+  }
+}
