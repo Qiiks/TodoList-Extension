@@ -28,6 +28,7 @@ out/
 # Environment files
 .env
 .env.*
+!.env.coolify.example
 
 # Coverage directory
 coverage/
@@ -57,4 +58,3 @@ coverage/
 .AppleDouble
 .LSOverride
 
-package-lock.json

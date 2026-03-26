@@ -16,9 +16,9 @@ export interface RefreshTokenRecord {
 
 export function issueAccessToken(
   payload: AccessTokenPayload,
-  expiresIn: string | number = '1h',
+  expiresIn: jwt.SignOptions['expiresIn'] = '1h',
 ) {
-  return jwt.sign(payload, config.jwtSecret, { expiresIn });
+  return jwt.sign(payload, config.jwtSecret, { expiresIn } as jwt.SignOptions);
 }
 
 export function verifyAccessToken(token: string) {
