@@ -1,9 +1,10 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
+ENV NODE_ENV=development
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/server/package*.json ./packages/server/
-RUN npm ci
+RUN npm ci --include=dev
 COPY . .
 RUN npm run build -w packages/shared && npm run build -w packages/server
 
