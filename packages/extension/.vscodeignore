@@ -1,0 +1,9 @@
+# Exclude extension source and tests from package payload
+src/**
+tests/**
+**/*.ts
+**/*.tsx
+**/*.map
+
+# Keep built webview bundle artifact
+!media/webview.js

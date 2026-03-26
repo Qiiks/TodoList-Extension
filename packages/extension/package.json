@@ -13,12 +13,6 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
-  "files": [
-    "dist/**",
-    "media/**",
-    "node_modules/**",
-    "package.json"
-  ],
   "contributes": {
     "commands": [
       {
@@ -116,9 +110,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "build:webview": "esbuild src/ui/webview/main.ts --bundle --format=iife --outfile=media/webview.js --platform=browser",
+    "compile": "npm run build:webview && tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "build": "tsc -p ./",
+    "build": "npm run build:webview && tsc -p ./",
     "test": "vitest run"
   },
   "dependencies": {
@@ -129,6 +124,7 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.25.4",
     "typescript": "^5.3.3",
     "vitest": "^1.2.2"
   }

@@ -49,6 +49,11 @@ Search results can flood context. Use `context-mode_ctx_execute(language: "shell
 - Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
 - When indexing content, use descriptive source labels so others can `search(source: "label")` later.
 
+## Project-specific workflow rule
+
+- After **every code change**, rebuild the VS Code extension `.vsix` before declaring completion.
+- Canonical artifact path: `packages/extension/teamtodo-extension-1.0.0.vsix`.
+
 ## ctx commands
 
 | Command | Action |

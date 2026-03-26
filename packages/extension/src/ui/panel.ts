@@ -7,7 +7,14 @@ import { WebsocketProvider } from 'y-websocket';
 import WebSocket from 'isomorphic-ws';
 import { CONSTANTS, type Priority } from '@teamtodo/shared';
 import { normalizeRepoUrl } from '../git/repo';
-import { clearSession, readSession, refreshSession, saveSession } from '../auth/session';
+import {
+  clearGithubExchangeToken,
+  clearSession,
+  readSession,
+  refreshSession,
+  saveGithubExchangeToken,
+  saveSession,
+} from '../auth/session';
 import { loadOfflineDoc } from '../sync/offline';
 import {
   addChecklistItem,
@@ -58,10 +65,6 @@ function escapeHtml(input: string): string {
     .replaceAll("'", '&#39;');
 }
 
-function nonce(): string {
-  return randomUUID().replaceAll('-', '');
-}
-
 function decodeJwt(token: string | null): JwtPayload {
   if (!token) {
     return {};
@@ -81,19 +84,10 @@ function decodeJwt(token: string | null): JwtPayload {
   }
 }
 
-function mapConnectionText(state: ConnectionIndicatorState): string {
-  if (state.state === 'connected') {
-    return 'Connected';
-  }
-  if (state.state === 'reconnecting') {
-    return 'Reconnecting';
-  }
-  return 'Offline — changes will sync when reconnected';
-}
-
 export class TeamTodoProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null;
   private readonly context: vscode.ExtensionContext;
+  private readonly _extensionUri: vscode.Uri;
   private doc: Y.Doc | null = null;
   private provider: WebsocketProvider | null = null;
   private undoManager: Y.UndoManager | null = null;
@@ -119,10 +113,12 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
   private reconnectCountdown: NodeJS.Timeout | null = null;
   private reconnectRemainingSec = 0;
   private suppressReconnect = false;
+  private activityCollapsed = true;
   private defaultPriority: Priority = 'medium';
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
+    this._extensionUri = context.extensionUri;
   }
 
   public async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
@@ -160,13 +156,16 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const githubToken = await vscode.window.showInputBox({
-      prompt: 'GitHub personal access token',
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (value) => (value.trim().length > 0 ? null : 'GitHub token is required'),
-    });
-    if (!githubToken) {
+    let githubSession: vscode.AuthenticationSession;
+    try {
+      const session = await vscode.authentication.getSession('github', ['read:user'], { createIfNone: true });
+      if (!session) {
+        vscode.window.showWarningMessage('GitHub sign-in was cancelled.');
+        return;
+      }
+      githubSession = session;
+    } catch (error) {
+      vscode.window.showErrorMessage(`GitHub sign-in failed: ${error instanceof Error ? error.message : 'unknown error'}`);
       return;
     }
 
@@ -183,7 +182,7 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
     const response = await fetch(`${serverUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ githubToken: githubToken.trim(), inviteCode: inviteCode.trim() }),
+      body: JSON.stringify({ githubToken: githubSession.accessToken.trim(), inviteCode: inviteCode.trim() }),
     });
 
     if (!response.ok) {
@@ -194,6 +193,7 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
     const payload = (await response.json()) as { jwt: string; refreshToken: string };
     this.jwt = payload.jwt;
     this.refreshToken = payload.refreshToken;
+    await saveGithubExchangeToken(this.context.secrets, githubSession.accessToken);
     await saveSession(this.context.secrets, payload.jwt, payload.refreshToken);
     this.connectRealtime();
     await this.refreshServerData();
@@ -215,7 +215,13 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
 
     this.jwt = null;
     this.refreshToken = null;
+    try {
+      await vscode.authentication.getSession('github', ['read:user'], { createIfNone: false, forceNewSession: false });
+    } catch {
+      // best effort
+    }
     await clearSession(this.context.secrets);
+    await clearGithubExchangeToken(this.context.secrets);
     this.disposeRealtime();
     this.connection = { state: 'disconnected' };
     this.presenceUsers = [];
@@ -703,39 +709,42 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
     const sections = {
       status: renderStatusIndicator(this.connection),
       presence: renderPresenceBar(this.presenceUsers),
-      options: this.renderOptionsBar(signedIn, hasRepo),
+      options: this.renderOptionsBar(signedIn, hasRepo, completedCount),
       search: renderSearchFilter(this.filterState, this.labels(), this.assignees()),
       todos: renderTodoList(todos, orderedIds, this.commentsByTodo, this.assignees()),
-      showCompleted: `<button class="tt-link-button" type="button" data-action="toggle-show-completed">${
-        this.showCompleted ? 'Hide' : 'Show'
-      } ${completedCount} completed</button>`,
       quickAdd: renderQuickAdd(this.defaultPriority),
-      activity: renderActivityFeed(this.activityItems, this.activityOffset, this.activityLimit),
+      activityHeader: `<button class="tt-activity-toggle" type="button" data-action="toggle-activity">${
+        this.activityCollapsed ? '▸ Activity' : '▾ Activity'
+      }</button>`,
+      activity: this.activityCollapsed ? '' : renderActivityFeed(this.activityItems, this.activityOffset, this.activityLimit),
       emptyState: this.repoId
         ? ''
         : '<section class="tt-empty-state-main">Open a GitHub repository to view todos.</section>',
       authBanner: this.repoId && !signedIn ? '<section class="tt-auth-banner">Not signed in. Use TeamTodo: Sign In.</section>' : '',
       repoText: this.repoId ? escapeHtml(this.repoId) : 'No repository detected',
-      statusText: escapeHtml(mapConnectionText(this.connection)),
     };
 
     void this.view.webview.postMessage({ type: 'render', sections });
   }
 
-  private renderOptionsBar(signedIn: boolean, hasRepo: boolean): string {
+  private renderOptionsBar(signedIn: boolean, hasRepo: boolean, completedCount: number): string {
     const authButton = signedIn
-      ? '<button type="button" data-action="sign-out">Sign out</button>'
-      : '<button type="button" data-action="sign-in">Sign in</button>';
+      ? '<button class="tt-icon-btn" type="button" data-action="sign-out" title="Sign out" aria-label="Sign out"><span aria-hidden="true">⎋</span></button>'
+      : '<button class="tt-icon-btn" type="button" data-action="sign-in" title="Sign in with GitHub" aria-label="Sign in with GitHub"><span aria-hidden="true">⏻</span></button>';
 
     return `
       <div class="tt-options">
         ${authButton}
-        <button type="button" data-action="switch-repo">Switch Repo</button>
-        <button type="button" data-action="toggle-show-completed">Completed</button>
-        <button type="button" data-action="undo" ${hasRepo ? '' : 'disabled'}>Undo</button>
-        <button type="button" data-action="redo" ${hasRepo ? '' : 'disabled'}>Redo</button>
-        <button type="button" data-action="export-markdown" ${signedIn && hasRepo ? '' : 'disabled'}>Export</button>
-        <button type="button" data-action="refresh">Refresh</button>
+        <button class="tt-icon-btn" type="button" data-action="switch-repo" title="Switch repository" aria-label="Switch repository"><span aria-hidden="true">⇄</span></button>
+        <button class="tt-icon-btn" type="button" data-action="toggle-show-completed" title="${
+          this.showCompleted ? 'Hide' : 'Show'
+        } completed (${completedCount})" aria-label="Toggle completed todos"><span aria-hidden="true">☑</span></button>
+        <button class="tt-icon-btn" type="button" data-action="undo" ${hasRepo ? '' : 'disabled'} title="Undo" aria-label="Undo"><span aria-hidden="true">↶</span></button>
+        <button class="tt-icon-btn" type="button" data-action="redo" ${hasRepo ? '' : 'disabled'} title="Redo" aria-label="Redo"><span aria-hidden="true">↷</span></button>
+        <button class="tt-icon-btn" type="button" data-action="export-markdown" ${
+          signedIn && hasRepo ? '' : 'disabled'
+        } title="Export markdown" aria-label="Export markdown"><span aria-hidden="true">⤓</span></button>
+        <button class="tt-icon-btn" type="button" data-action="refresh" title="Refresh" aria-label="Refresh"><span aria-hidden="true">↻</span></button>
       </div>
     `;
   }
@@ -768,6 +777,11 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       }
       case 'toggle-show-completed': {
         this.toggleShowCompleted();
+        return;
+      }
+      case 'toggle-activity': {
+        this.activityCollapsed = !this.activityCollapsed;
+        this.pushRender();
         return;
       }
       case 'retry-now': {
@@ -967,16 +981,19 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
   }
 
   private renderShell(webview: vscode.Webview): string {
-    const scriptNonce = nonce();
     const csp = [
       "default-src 'none'",
-      `img-src ${webview.cspSource} https: data:`,
+      `script-src ${webview.cspSource}`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
-      `script-src 'nonce-${scriptNonce}'`,
+      `img-src ${webview.cspSource} https: data:`,
     ].join('; ');
 
+    const scriptUri = webview
+      .asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'webview.js'))
+      .toString();
+
     const logoUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'icon.svg'))
+      .asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'icon.svg'))
       .toString();
 
     return `<!DOCTYPE html>
@@ -995,11 +1012,10 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       font-family: var(--vscode-font-family);
       font-size: var(--vscode-font-size);
     }
-    .tt-root { display: grid; grid-template-rows: auto auto auto auto 1fr auto auto; height: 100vh; }
+    .tt-root { display: grid; grid-template-rows: auto auto auto auto 1fr auto auto; height: 100vh; min-height: 100vh; }
     .tt-section { padding: 8px; border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border); }
-    .tt-scroller { overflow-y: auto; padding: 8px; }
-    .tt-footer { padding: 8px; border-top: 1px solid var(--vscode-sideBarSectionHeader-border); background: var(--vscode-sideBar-background); }
-    .tt-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .tt-scroller { overflow-y: auto; padding: 8px; min-height: 0; }
+    .tt-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .tt-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .tt-brand-meta { min-width: 0; }
     .tt-logo {
@@ -1010,9 +1026,23 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-editorWidget-background);
       flex: 0 0 auto;
     }
-    .tt-options { display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+    .tt-options { display: flex; gap: 4px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; }
+    .tt-icon-btn {
+      width: 24px;
+      height: 24px;
+      min-width: 24px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      line-height: 1;
+      border-color: var(--vscode-toolbar-hoverBackground);
+      background: transparent;
+      color: var(--vscode-icon-foreground);
+    }
+    .tt-icon-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
     .tt-repo { color: var(--vscode-descriptionForeground); font-size: 12px; }
-    .tt-status-line { color: var(--vscode-descriptionForeground); font-size: 12px; }
     .tt-auth-banner, .tt-empty-state-main {
       margin: 8px;
       padding: 8px;
@@ -1020,14 +1050,27 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-editorWidget-background);
       border-radius: 6px;
     }
-    .tt-link-button {
-      border: none;
-      background: transparent;
-      color: var(--vscode-textLink-foreground);
-      cursor: pointer;
-      padding: 0;
+    .tt-quick-add { display: grid; gap: 8px; }
+    .tt-quick-add-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(0, 2fr) minmax(64px, 1fr);
+      gap: 8px;
+      align-items: stretch;
     }
-    .tt-link-button:hover { color: var(--vscode-textLink-activeForeground); }
+    .tt-quick-add-input { width: 100%; min-height: 36px; resize: vertical; }
+    .tt-quick-add-priority { width: 100%; }
+    .tt-quick-add-submit { width: 100%; }
+    .tt-quick-add-hint { color: var(--vscode-descriptionForeground); }
+
+    .tt-search-wrap { display: grid; gap: 8px; }
+    .tt-search-filter {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      align-items: center;
+    }
+
+    .tt-todo-list { display: grid; gap: 8px; }
     .tt-todo-item { border: 1px solid var(--vscode-sideBarSectionHeader-border); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
     .tt-todo-item:hover { background: var(--vscode-list-hoverBackground); }
     .tt-todo-header { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
@@ -1062,8 +1105,46 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
     button:hover { background: var(--vscode-button-hoverBackground); }
     button:disabled { opacity: 0.6; cursor: default; }
     .tt-delete-btn { background: var(--vscode-errorForeground); color: var(--vscode-button-foreground); }
-    .tt-presence-list, .tt-search-filter, .tt-quick-add, .tt-comment-form, .tt-checklist-add-row, .tt-activity-pagination { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    .tt-quick-add-input { flex: 1; min-height: 36px; }
+    .tt-presence-list, .tt-comment-form, .tt-checklist-add-row, .tt-activity-pagination { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    .tt-activity-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .tt-activity-toggle {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--vscode-sideBarSectionHeader-border);
+      background: var(--vscode-editorWidget-background);
+      color: var(--vscode-sideBar-foreground);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .tt-activity-items { display: grid; gap: 8px; margin-top: 8px; }
+    .tt-activity-item { border: 1px solid var(--vscode-sideBarSectionHeader-border); border-radius: 4px; padding: 8px; }
+
+    .tt-status-bar {
+      border-top: 1px solid var(--vscode-statusBar-border, var(--vscode-sideBarSectionHeader-border));
+      background: var(--vscode-statusBar-background);
+      color: var(--vscode-statusBar-foreground);
+      padding: 4px 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      min-height: 24px;
+      font-size: 12px;
+    }
+    .tt-status-indicator { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
+    .tt-status-retry {
+      background: transparent;
+      color: var(--vscode-statusBar-foreground);
+      border-color: transparent;
+      text-decoration: underline;
+      padding: 0;
+    }
     .tt-description-rendered { border-left: 2px solid var(--vscode-textLink-foreground); padding-left: 8px; margin: 8px 0; }
     .tt-comment-item { display: flex; gap: 8px; padding: 4px 0; }
     .tt-comment-content p { margin: 4px 0 0 0; }
@@ -1080,307 +1161,24 @@ export class TeamTodoProvider implements vscode.WebviewViewProvider {
         <img class="tt-logo" src="${logoUri}" alt="TeamTodo logo" />
         <div class="tt-brand-meta">
           <div id="repoText" class="tt-repo"></div>
-          <div id="statusText" class="tt-status-line"></div>
         </div>
       </div>
       <div id="optionsSection"></div>
     </section>
     <section class="tt-section" id="quickAddSection"></section>
-    <section class="tt-section" id="statusSection"></section>
     <section class="tt-section" id="presenceSection"></section>
-    <section class="tt-section" id="searchSection"></section>
+    <section class="tt-section tt-search-wrap" id="searchSection"></section>
     <div id="emptyState"></div>
     <div id="authBanner"></div>
     <section class="tt-scroller" id="todoSection"></section>
-    <section class="tt-section" id="showCompletedSection"></section>
-    <section class="tt-section" id="activitySection"></section>
+    <section class="tt-section">
+      <div class="tt-activity-header" id="activityHeader"></div>
+      <div id="activitySection"></div>
+    </section>
+    <section class="tt-status-bar" id="statusSection"></section>
   </div>
 
-  <script nonce="${scriptNonce}">
-    const vscode = acquireVsCodeApi();
-    let dragFrom = null;
-
-    function renderMarkdown(input) {
-      const backtick = String.fromCharCode(96);
-      const codePattern = new RegExp(backtick + '(.+?)' + backtick, 'g');
-      const escaped = input
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
-        .replace(/\\*(.+?)\\*/g, '<em>$1</em>')
-        .replace(codePattern, '<code>$1</code>')
-        .replace(/\\[(.+?)\\]\\((.+?)\\)/g, '<a href="$2">$1</a>');
-      return escaped.replaceAll('\\n', '<br/>');
-    }
-
-    function syncMarkdownViews() {
-      document.querySelectorAll('[data-md-rendered]').forEach((el) => {
-        const todoId = el.getAttribute('data-md-rendered');
-        const input = document.querySelector('[data-action="set-description"][data-todo-id="' + todoId + '"]');
-        if (input) {
-          el.innerHTML = renderMarkdown(input.value || 'No description');
-        }
-      });
-    }
-
-    window.addEventListener('message', (event) => {
-      const message = event.data;
-      if (message.type === 'focus-quick-add') {
-        const input = document.querySelector('.tt-quick-add-input');
-        if (input) input.focus();
-        return;
-      }
-
-      if (message.type !== 'render') {
-        return;
-      }
-
-      const { sections } = message;
-      document.getElementById('statusSection').innerHTML = sections.status || '';
-      document.getElementById('presenceSection').innerHTML = sections.presence || '';
-      document.getElementById('optionsSection').innerHTML = sections.options || '';
-      document.getElementById('searchSection').innerHTML = sections.search || '';
-      document.getElementById('todoSection').innerHTML = sections.todos || '';
-      document.getElementById('showCompletedSection').innerHTML = sections.showCompleted || '';
-      document.getElementById('quickAddSection').innerHTML = sections.quickAdd || '';
-      document.getElementById('activitySection').innerHTML = sections.activity || '';
-      document.getElementById('emptyState').innerHTML = sections.emptyState || '';
-      document.getElementById('authBanner').innerHTML = sections.authBanner || '';
-      document.getElementById('repoText').textContent = sections.repoText || '';
-      document.getElementById('statusText').textContent = sections.statusText || '';
-      syncMarkdownViews();
-    });
-
-    document.addEventListener('submit', (event) => {
-      const form = event.target;
-      if (!(form instanceof HTMLFormElement)) return;
-
-      if (form.matches('[data-action="quick-add"]')) {
-        event.preventDefault();
-        const titleInput = form.querySelector('[name="title"]');
-        const priorityInput = form.querySelector('[name="priority"]');
-        if (!titleInput || !priorityInput) return;
-        const title = titleInput.value || '';
-        const priority = priorityInput.value || 'medium';
-        vscode.postMessage({ action: 'quick-add', title, priority });
-        titleInput.value = '';
-        return;
-      }
-
-      if (form.matches('[data-action="submit-comment"]')) {
-        event.preventDefault();
-        const todoId = form.getAttribute('data-todo-id');
-        const textarea = form.querySelector('textarea[name="body"]');
-        if (!todoId || !textarea) return;
-        const body = textarea.value || '';
-        vscode.postMessage({ action: 'submit-comment', todoId, body });
-        textarea.value = '';
-      }
-    });
-
-    document.addEventListener('keydown', (event) => {
-      const target = event.target;
-
-      if (target && target.matches && target.matches('.tt-quick-add-input') && event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        const form = target.closest('form[data-action="quick-add"]');
-        if (form) {
-          form.requestSubmit();
-        }
-      }
-
-      if (event.key === 'Escape') {
-        document.querySelectorAll('[data-todo-expanded]').forEach((el) => {
-          el.hidden = true;
-        });
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'T' || event.key === 't')) {
-        event.preventDefault();
-        const input = document.querySelector('.tt-quick-add-input');
-        if (input) input.focus();
-      }
-
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'z' || event.key === 'Z')) {
-        event.preventDefault();
-        vscode.postMessage({ action: 'undo' });
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'z' || event.key === 'Z')) {
-        event.preventDefault();
-        vscode.postMessage({ action: 'redo' });
-      }
-
-      const row = target && target.closest ? target.closest('.tt-todo-row') : null;
-      if (row && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-        event.preventDefault();
-        const rows = Array.from(document.querySelectorAll('.tt-todo-row'));
-        const index = rows.indexOf(row);
-        const next = event.key === 'ArrowDown' ? rows[index + 1] : rows[index - 1];
-        if (next) next.focus();
-      }
-
-      if (row && (event.key === 'Enter' || event.key === ' ')) {
-        if (target && target.tagName && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName)) {
-          return;
-        }
-        event.preventDefault();
-        const todoId = row.getAttribute('data-todo-id');
-        if (todoId) vscode.postMessage({ action: 'toggle-todo', todoId });
-      }
-
-      if (row && event.key === 'Delete') {
-        event.preventDefault();
-        const todoId = row.getAttribute('data-todo-id');
-        if (!todoId) return;
-        if (confirm('Delete this todo?')) {
-          vscode.postMessage({ action: 'delete-todo', todoId });
-        }
-      }
-    });
-
-    document.addEventListener('click', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const actionEl = target.closest('[data-action]');
-      if (!actionEl) return;
-
-      const action = actionEl.getAttribute('data-action');
-      const todoId = actionEl.getAttribute('data-todo-id');
-
-      if (action === 'toggle-expand') {
-        const expanded = document.querySelector('[data-todo-expanded="' + todoId + '"]');
-        if (expanded) {
-          expanded.hidden = !expanded.hidden;
-        }
-        return;
-      }
-
-      if (action === 'toggle-todo' && todoId) {
-        vscode.postMessage({ action: 'toggle-todo', todoId });
-        return;
-      }
-
-      if (action === 'delete-todo' && todoId) {
-        if (confirm('Delete this todo?')) {
-          vscode.postMessage({ action: 'delete-todo', todoId });
-        }
-        return;
-      }
-
-      if (
-        action === 'activity-next' ||
-        action === 'activity-prev' ||
-        action === 'toggle-show-completed' ||
-        action === 'retry-now' ||
-        action === 'refresh' ||
-        action === 'sign-in' ||
-        action === 'sign-out' ||
-        action === 'switch-repo' ||
-        action === 'export-markdown' ||
-        action === 'undo' ||
-        action === 'redo'
-      ) {
-        vscode.postMessage({ action });
-        return;
-      }
-
-      if (action === 'add-checklist-item' && todoId) {
-        const input = document.querySelector('[data-checklist-input="' + todoId + '"]');
-        if (!input) return;
-        vscode.postMessage({ action: 'add-checklist-item', todoId, text: input.value || '' });
-        input.value = '';
-      }
-    });
-
-    document.addEventListener('change', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-
-      if (target.matches('[data-action="filter-change"]')) {
-        vscode.postMessage({ action: 'filter-change', name: target.getAttribute('name'), value: target.value || '' });
-        return;
-      }
-
-      if (target.matches('[data-action="set-priority"]')) {
-        vscode.postMessage({ action: 'set-priority', todoId: target.getAttribute('data-todo-id'), priority: target.value || 'medium' });
-        return;
-      }
-
-      if (target.matches('[data-action="set-assignee"]')) {
-        vscode.postMessage({ action: 'set-assignee', todoId: target.getAttribute('data-todo-id'), assignee: target.value || '' });
-        return;
-      }
-
-      if (target.matches('[data-action="toggle-checklist-item"]')) {
-        vscode.postMessage({
-          action: 'toggle-checklist-item',
-          todoId: target.getAttribute('data-todo-id'),
-          checklistId: target.getAttribute('data-checklist-id'),
-          completed: Boolean(target.checked),
-        });
-      }
-    });
-
-    document.addEventListener('input', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-
-      if (target.matches('[data-action="set-description"]')) {
-        vscode.postMessage({ action: 'set-description', todoId: target.getAttribute('data-todo-id'), description: target.value || '' });
-        syncMarkdownViews();
-      }
-
-      if (target.matches('[data-action="set-labels"]')) {
-        vscode.postMessage({ action: 'set-labels', todoId: target.getAttribute('data-todo-id'), labels: target.value || '' });
-      }
-    });
-
-    document.addEventListener('dragstart', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const row = target.closest('.tt-todo-row');
-      if (!row) return;
-      dragFrom = Number(row.getAttribute('data-order-index'));
-      event.dataTransfer?.setData('text/plain', String(dragFrom));
-      event.dataTransfer?.setDragImage(row, 8, 8);
-    });
-
-    document.addEventListener('dragover', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const row = target.closest('.tt-todo-row');
-      if (!row) return;
-      event.preventDefault();
-      row.classList.add('tt-drag-over');
-    });
-
-    document.addEventListener('dragleave', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const row = target.closest('.tt-todo-row');
-      if (!row) return;
-      row.classList.remove('tt-drag-over');
-    });
-
-    document.addEventListener('drop', (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const row = target.closest('.tt-todo-row');
-      if (!row) return;
-      event.preventDefault();
-      row.classList.remove('tt-drag-over');
-      const to = Number(row.getAttribute('data-order-index'));
-      const from = typeof dragFrom === 'number' ? dragFrom : Number(event.dataTransfer?.getData('text/plain'));
-      if (Number.isFinite(from) && Number.isFinite(to)) {
-        vscode.postMessage({ action: 'reorder', from, to });
-      }
-      dragFrom = null;
-    });
-
-    vscode.postMessage({ action: 'webview-ready' });
-  </script>
+  <script src="${scriptUri}"></script>
 </body>
 </html>`;
   }

@@ -10,9 +10,12 @@ function escapeHtml(input: string): string {
 }
 
 export function renderPresenceBar(users: WebviewPresenceUser[]): string {
+  if (users.length === 0) {
+    return '<section class="tt-presence-bar"><div class="tt-presence-empty">No collaborators active</div></section>';
+  }
+
   return `
     <section class="tt-presence-bar">
-      <h3 class="tt-section-title">Online</h3>
       <div class="tt-presence-list">
         ${users
           .map(
